@@ -145,7 +145,7 @@ The MCP enables natural language questions like:
 | Tool | Description |
 |------|-------------|
 | `get_vendor` / `search_vendors` | PS_VENDOR |
-| `get_voucher_header` / `get_voucher_lines` | PS_VCHR_HDR, dist/line tables |
+| `get_voucher_header` / `get_voucher_lines` / `get_voucher_distribution_lines` | PS_VOUCHER, PS_VOUCHER_LINE, PS_DISTRIB_LINE (legacy VCHR_* fallbacks) |
 | `list_recent_vouchers` | Recent invoices by BU |
 
 ### AR / Billing (`tools/ar.py`)
