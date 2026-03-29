@@ -93,7 +93,7 @@ def register_tools(mcp):
             FROM PS_PO_HDR P
             WHERE {where_sql}
             ORDER BY P.PO_DT DESC
-            FETCH FIRST :lim ROWS ONLY
+            FETCH FIRST :{n} ROWS ONLY
         """
         params.append(limit)
         return await execute_query(sql, params)

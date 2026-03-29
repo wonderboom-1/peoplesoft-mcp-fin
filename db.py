@@ -1,13 +1,18 @@
 """
 Database connection management for PeopleSoft Finance MCP.
-Provides centralized query execution with async support.
+Provides centralized query execution with async support and connection pooling.
 """
+import asyncio
 import os
-import oracledb
 from typing import Any
+
+import oracledb
 from dotenv import load_dotenv
 
 load_dotenv()
+
+_pool = None
+_pool_lock = asyncio.Lock()
 
 
 def get_connection_params() -> dict[str, str]:
@@ -24,6 +29,25 @@ def get_connection_params() -> dict[str, str]:
     return {"dsn": dsn, "user": user, "password": password}
 
 
+async def _get_pool():
+    """Lazily create and return an Oracle async connection pool (double-check locking)."""
+    global _pool
+    if _pool is not None:
+        return _pool
+    async with _pool_lock:
+        if _pool is not None:
+            return _pool
+        params = get_connection_params()
+        _pool = oracledb.create_pool_async(
+            user=params["user"],
+            password=params["password"],
+            dsn=params["dsn"],
+            min=2,
+            max=10,
+        )
+        return _pool
+
+
 async def execute_query(
     sql: str,
     params: list[Any] | None = None,
@@ -36,12 +60,8 @@ async def execute_query(
         params = []
 
     try:
-        conn_params = get_connection_params()
-        async with oracledb.connect_async(
-            user=conn_params["user"],
-            password=conn_params["password"],
-            dsn=conn_params["dsn"],
-        ) as conn:
+        pool = await _get_pool()
+        async with pool.acquire() as conn:
             async with conn.cursor() as cursor:
                 await cursor.execute(sql, params)
 
@@ -75,12 +95,8 @@ async def execute_query_with_limit(
         params = []
 
     try:
-        conn_params = get_connection_params()
-        async with oracledb.connect_async(
-            user=conn_params["user"],
-            password=conn_params["password"],
-            dsn=conn_params["dsn"],
-        ) as conn:
+        pool = await _get_pool()
+        async with pool.acquire() as conn:
             async with conn.cursor() as cursor:
                 await cursor.execute(sql, params)
 

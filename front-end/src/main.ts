@@ -49,6 +49,96 @@ function renderMessages(container: HTMLElement, items: UiMessage[]) {
   container.scrollTop = container.scrollHeight;
 }
 
+function truncate(s: string, max: number): string {
+  return s.length > max ? s.slice(0, max) + "…" : s;
+}
+
+async function consumeSSEStream(
+  res: Response,
+  history: UiMessage[],
+  messagesEl: HTMLElement,
+  setStatus: (text: string, ok?: boolean, err?: boolean) => void,
+): Promise<string> {
+  const reader = res.body!.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = "";
+  let replyText = "";
+  const toolBubbleMap: Record<number, number> = {};
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += value;
+
+    const parts = buffer.split("\n\n");
+    buffer = parts.pop()!;
+
+    for (const part of parts) {
+      if (!part.trim()) continue;
+      let eventType = "";
+      let dataStr = "";
+      for (const line of part.split("\n")) {
+        if (line.startsWith("event: ")) eventType = line.slice(7);
+        else if (line.startsWith("data: ")) dataStr = line.slice(6);
+      }
+      if (!dataStr) continue;
+
+      const parsed = JSON.parse(dataStr);
+
+      switch (eventType) {
+        case "status":
+          setStatus(parsed.message);
+          break;
+
+        case "tool_start": {
+          const argsStr = truncate(JSON.stringify(parsed.args), 600);
+          toolBubbleMap[parsed.index] = history.length;
+          history.push({
+            kind: "tool",
+            name: parsed.name,
+            detail: `${argsStr}\n\n⏳ Running…`,
+          });
+          renderMessages(messagesEl, history);
+          break;
+        }
+
+        case "tool_result": {
+          const argsStr = truncate(JSON.stringify(parsed.args), 600);
+          const preview = truncate(parsed.result, 1200);
+          const idx = toolBubbleMap[parsed.index];
+          if (idx !== undefined && history[idx]?.kind === "tool") {
+            history[idx] = {
+              kind: "tool",
+              name: parsed.name,
+              detail: `${argsStr}\n\n→ ${preview}`,
+            };
+          } else {
+            history.push({
+              kind: "tool",
+              name: parsed.name,
+              detail: `${argsStr}\n\n→ ${preview}`,
+            });
+          }
+          renderMessages(messagesEl, history);
+          break;
+        }
+
+        case "text":
+          replyText = parsed.text;
+          history.push({ kind: "assistant", text: replyText });
+          renderMessages(messagesEl, history);
+          break;
+
+        case "done":
+          break;
+
+        case "error":
+          throw new Error(parsed.error);
+      }
+    }
+  }
+  return replyText;
+}
+
 async function main() {
   const history: UiMessage[] = [];
   const chatHistory: { role: string; content: string }[] = [];
@@ -65,11 +155,21 @@ async function main() {
   const sendBtn = el("button", { className: "btn btn-primary", type: "button" }, [
     "Send",
   ]) as HTMLButtonElement;
+  const clearBtn = el("button", { className: "btn btn-clear", type: "button" }, [
+    "Clear Chat",
+  ]) as HTMLButtonElement;
 
   const setStatus = (text: string, ok?: boolean, err?: boolean) => {
     statusEl.textContent = text;
     statusEl.className = "status" + (ok ? " ok" : "") + (err ? " err" : "");
   };
+
+  clearBtn.addEventListener("click", () => {
+    history.length = 0;
+    chatHistory.length = 0;
+    renderMessages(messagesEl, history);
+    setStatus("Chat cleared — Ready", true);
+  });
 
   const runSend = async () => {
     const text = textarea.value.trim();
@@ -80,7 +180,7 @@ async function main() {
     renderMessages(messagesEl, history);
 
     sendBtn.disabled = true;
-    setStatus("Calling LLM + MCP tools…");
+    setStatus("Sending…");
 
     try {
       const res = await fetch("/chat", {
@@ -89,45 +189,57 @@ async function main() {
         body: JSON.stringify({ message: text, history: chatHistory }),
       });
 
-      const raw = await res.text();
-      if (!raw) {
-        throw new Error(`Server returned empty response (HTTP ${res.status}). Is the backend running?`);
-      }
-      let data: ChatResponse;
-      try {
-        data = JSON.parse(raw) as ChatResponse;
-      } catch {
-        throw new Error(`Server returned non-JSON (HTTP ${res.status}): ${raw.slice(0, 200)}`);
-      }
+      const contentType = res.headers.get("content-type") || "";
 
-      if (data.error) {
-        history.push({ kind: "assistant", text: `Error: ${data.error}` });
-        renderMessages(messagesEl, history);
-        setStatus(data.error, false, true);
-        return;
-      }
-
-      if (data.tool_calls) {
-        for (const tc of data.tool_calls) {
-          const argsStr = JSON.stringify(tc.args);
-          const preview =
-            tc.result.length > 1200 ? `${tc.result.slice(0, 1200)}…` : tc.result;
-          history.push({
-            kind: "tool",
-            name: tc.name,
-            detail: `${argsStr.length > 600 ? argsStr.slice(0, 600) + "…" : argsStr}\n\n→ ${preview}`,
-          });
+      if (contentType.includes("text/event-stream") && res.body) {
+        const replyText = await consumeSSEStream(
+          res,
+          history,
+          messagesEl,
+          setStatus,
+        );
+        if (replyText) {
+          chatHistory.push({ role: "user", content: text });
+          chatHistory.push({ role: "assistant", content: replyText });
         }
+        setStatus("Ready", true);
+      } else {
+        const raw = await res.text();
+        if (!raw) {
+          throw new Error(
+            `Server returned empty response (HTTP ${res.status}). Is the backend running?`,
+          );
+        }
+        let data: ChatResponse;
+        try {
+          data = JSON.parse(raw) as ChatResponse;
+        } catch {
+          throw new Error(
+            `Server returned non-JSON (HTTP ${res.status}): ${raw.slice(0, 200)}`,
+          );
+        }
+
+        if (data.error) {
+          throw new Error(data.error);
+        }
+
+        if (data.tool_calls) {
+          for (const tc of data.tool_calls) {
+            history.push({
+              kind: "tool",
+              name: tc.name,
+              detail: `${truncate(JSON.stringify(tc.args), 600)}\n\n→ ${truncate(tc.result, 1200)}`,
+            });
+          }
+        }
+        const reply = data.reply || "(No response)";
+        history.push({ kind: "assistant", text: reply });
+        renderMessages(messagesEl, history);
+
+        chatHistory.push({ role: "user", content: text });
+        chatHistory.push({ role: "assistant", content: reply });
+        setStatus("Ready", true);
       }
-
-      const reply = data.reply || "(No response)";
-      history.push({ kind: "assistant", text: reply });
-      renderMessages(messagesEl, history);
-
-      chatHistory.push({ role: "user", content: text });
-      chatHistory.push({ role: "assistant", content: reply });
-
-      setStatus("Ready", true);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       history.push({ kind: "assistant", text: `Error: ${msg}` });
@@ -182,7 +294,7 @@ async function main() {
           el("p", { className: "hint" }, [
             "Shift+Enter for newline · Enter to send",
           ]),
-          el("div", { className: "composer-row" }, [textarea, sendBtn]),
+          el("div", { className: "composer-row" }, [textarea, sendBtn, clearBtn]),
         ]),
       ]),
     ]),

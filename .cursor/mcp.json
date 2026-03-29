@@ -4,7 +4,7 @@
       "command": "uv",
       "args": [
         "--directory",
-        "/home/peoplesoft-mcp-fin",
+        "/home/usr/peoplesoft-mcp-fin",
         "run",
         "--no-python-downloads",
         "--python",

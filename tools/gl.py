@@ -25,8 +25,8 @@ def register_tools(mcp):
                 G.EFF_STATUS,
                 G.DESCR,
                 G.ACCOUNT_TYPE,
-                G.OFF_ACCOUNT,
-                G.STAT_ACCOUNT
+                G.BUDGETARY_ONLY,
+                G.BALANCE_FWD_SW
             FROM PS_GL_ACCOUNT_TBL G
             WHERE G.SETID = :1 AND G.ACCOUNT = :2
             AND G.EFFDT = (
@@ -48,8 +48,6 @@ def register_tools(mcp):
             "status": row["EFF_STATUS"],
             "description": row["DESCR"],
             "account_type": row["ACCOUNT_TYPE"],
-            "offset_account": row["OFF_ACCOUNT"],
-            "stat_account": row["STAT_ACCOUNT"],
         }
 
     @mcp.tool()
@@ -67,18 +65,19 @@ def register_tools(mcp):
         :param account_type: Optional ACCOUNT_TYPE filter
         :param limit: Max rows
         """
-        params = [setid.upper()]
+        params: list = [setid.upper()]
         cond = ["G.SETID = :1", """G.EFFDT = (
             SELECT MAX(G2.EFFDT) FROM PS_GL_ACCOUNT_TBL G2
             WHERE G2.SETID = G.SETID AND G2.ACCOUNT = G.ACCOUNT AND G2.EFFDT <= SYSDATE
         )"""]
         idx = 2
         if pattern:
+            pat = f"%{pattern.upper()}%"
             cond.append(
-                f"(UPPER(G.ACCOUNT) LIKE :{idx} OR UPPER(G.DESCR) LIKE :{idx})"
+                f"(UPPER(G.ACCOUNT) LIKE :{idx} OR UPPER(G.DESCR) LIKE :{idx + 1})"
             )
-            params.append(f"%{pattern.upper()}%")
-            idx += 1
+            params.extend([pat, pat])
+            idx += 2
         if account_type:
             cond.append(f"G.ACCOUNT_TYPE = :{idx}")
             params.append(account_type.upper())
@@ -90,7 +89,7 @@ def register_tools(mcp):
             WHERE {where_sql}
             AND G.EFF_STATUS = 'A'
             ORDER BY G.ACCOUNT
-            FETCH FIRST :lim ROWS ONLY
+            FETCH FIRST :{idx} ROWS ONLY
         """
         params.append(limit)
         return await execute_query(sql, params)
@@ -108,26 +107,30 @@ def register_tools(mcp):
         Summarize posted ledger balances by account for a BU/ledger/year/period (PS_LEDGER).
 
         :param business_unit: Business Unit
-        :param ledger: Ledger group code (e.g., ACTUALS)
+        :param ledger: Ledger code (e.g., USDACT, LOCACT)
         :param fiscal_year: Fiscal year
-        :param accounting_period: Accounting period (1-12 or per your calendar)
+        :param accounting_period: Accounting period (0-12 or per your calendar)
         :param account_pattern: Optional LIKE pattern on ACCOUNT
         :param limit: Max accounts returned
         """
-        params = [
+        params: list = [
             business_unit.upper(),
             ledger.upper(),
             fiscal_year,
             accounting_period,
         ]
+        n = 5
         acct_cond = ""
         if account_pattern:
-            acct_cond = " AND L.ACCOUNT LIKE :5 "
+            acct_cond = f" AND L.ACCOUNT LIKE :{n} "
             params.append(account_pattern.upper().replace("*", "%"))
+            n += 1
         sql = f"""
             SELECT
                 L.ACCOUNT,
-                SUM(L.MONETARY_AMOUNT) AS TOTAL_AMOUNT,
+                SUM(L.POSTED_TOTAL_AMT) AS TOTAL_AMOUNT,
+                SUM(L.POSTED_TOTAL_DR)  AS TOTAL_DEBITS,
+                SUM(L.POSTED_TOTAL_CR)  AS TOTAL_CREDITS,
                 L.CURRENCY_CD
             FROM PS_LEDGER L
             WHERE L.BUSINESS_UNIT = :1
@@ -137,7 +140,7 @@ def register_tools(mcp):
             {acct_cond}
             GROUP BY L.ACCOUNT, L.CURRENCY_CD
             ORDER BY L.ACCOUNT
-            FETCH FIRST :lim ROWS ONLY
+            FETCH FIRST :{n} ROWS ONLY
         """
         params.append(limit)
         return await execute_query(sql, params)
@@ -145,7 +148,7 @@ def register_tools(mcp):
     @mcp.tool()
     async def get_journal_header(business_unit: str, journal_id: str) -> dict:
         """
-        Get journal header (PS_JRNL_HDR) by business unit and journal ID.
+        Get journal header (PS_JRNL_HDR, metadata record JRNL_HEADER).
 
         :param business_unit: BU
         :param journal_id: Journal ID
@@ -164,7 +167,7 @@ def register_tools(mcp):
         limit: int = 500,
     ) -> dict:
         """
-        Get journal lines (PS_JRNL_LN) for a journal.
+        Get journal lines (PS_JRNL_LN, metadata record JRNL_LINE).
 
         :param business_unit: BU
         :param journal_id: Journal ID
@@ -186,7 +189,7 @@ def register_tools(mcp):
         :param business_unit: BU
         :param ledger_group: Optional ledger group filter
         """
-        params = [business_unit.upper()]
+        params: list = [business_unit.upper()]
         lg = ""
         if ledger_group:
             lg = " AND O.LEDGER_GROUP = :2 "

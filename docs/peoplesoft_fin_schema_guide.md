@@ -7,8 +7,8 @@ Use **`describe_table`** and **`list_tables(module='...')`** for your exact inst
 | Table | Description | Typical keys |
 |-------|-------------|--------------|
 | PS_LEDGER | Posted ledger balances / activity | BU, LEDGER, ACCOUNT, FISCAL_YEAR, ACCOUNTING_PERIOD, … |
-| PS_JRNL_HDR | Journal header | BUSINESS_UNIT, JOURNAL_ID |
-| PS_JRNL_LN | Journal lines | BUSINESS_UNIT, JOURNAL_ID, JOURNAL_LINE |
+| PS_JRNL_HDR | Journal header (metadata record: JRNL_HEADER) | BUSINESS_UNIT, JOURNAL_ID |
+| PS_JRNL_LN | Journal lines (metadata record: JRNL_LINE) | BUSINESS_UNIT, JOURNAL_ID, JOURNAL_LINE |
 | PS_GL_ACCOUNT_TBL | Chart of accounts | SETID, ACCOUNT, EFFDT |
 | PS_OPEN_PERIOD | Open periods (if used) | BUSINESS_UNIT, LEDGER_GROUP, FISCAL_YEAR, ACCOUNTING_PERIOD |
 
@@ -16,10 +16,11 @@ Use **`describe_table`** and **`list_tables(module='...')`** for your exact inst
 
 | Table | Description | Typical keys |
 |-------|-------------|--------------|
-| PS_VENDOR | Vendor master | SETID, VENDOR_ID, EFFDT |
-| PS_VCHR_HDR | Voucher header | BUSINESS_UNIT, VOUCHER_ID |
-| PS_VCHR_DIST_LN | Voucher distribution (GL lines) | BUSINESS_UNIT, VOUCHER_ID, line keys |
-| PS_VCHR_LINE | Voucher line (product/expense) | BUSINESS_UNIT, VOUCHER_ID |
+| PS_VENDOR | Vendor master | SETID, VENDOR_ID (eff-dating varies) |
+| PS_VOUCHER | Voucher header | BUSINESS_UNIT, VOUCHER_ID |
+| PS_VOUCHER_LINE | Voucher line (invoice / expense) | BUSINESS_UNIT, VOUCHER_ID, VOUCHER_LINE_NUM |
+| PS_DISTRIB_LINE | Distribution (GL) lines — child of voucher line | BUSINESS_UNIT, VOUCHER_ID, VOUCHER_LINE_NUM, DISTRIB_LINE_NUM |
+| PS_VCHR_HDR / PS_VCHR_LINE / PS_VCHR_DIST_LN | Legacy names on some installs | Same logical keys |
 | PS_PAYMENT_TBL / payment views | Payments | Varies by release |
 
 ## Accounts Receivable / Billing

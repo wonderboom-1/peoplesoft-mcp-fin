@@ -3,6 +3,156 @@ Schema introspection tools for PeopleSoft Finance MCP.
 """
 from db import execute_query, execute_query_with_limit
 
+# Physical PS_* table suffix → actual RECNAME in PeopleTools metadata.
+# PeopleSoft truncates RECNAME to form the physical table name; these don't always match.
+_TABLE_ALIAS: dict[str, list[str]] = {
+    "JRNL_HDR": ["JRNL_HEADER", "JRNL_HDR"],
+    "JRNL_LN": ["JRNL_LINE", "JRNL_LN"],
+}
+
+_RECFIELD_SQL = """
+    SELECT
+        RF.FIELDNAME,
+        RF.FIELDNUM,
+        DF.FIELDTYPE,
+        DF.LENGTH,
+        DF.DECIMALPOS,
+        DBMS_LOB.SUBSTR(DF.DESCRLONG, 4000, 1) AS DESCRIPTION,
+        CASE WHEN RF.USEEDIT LIKE '%K%' THEN 'Y' ELSE 'N' END AS IS_KEY,
+        CASE WHEN RF.USEEDIT LIKE '%R%' THEN 'Y' ELSE 'N' END AS IS_REQUIRED,
+        CASE WHEN DF.FIELDTYPE = 1 THEN 'XLAT' ELSE NULL END AS HAS_TRANSLATE
+    FROM PSRECFIELD RF
+    JOIN PSDBFIELD DF ON RF.FIELDNAME = DF.FIELDNAME
+    WHERE RF.RECNAME = :1
+    ORDER BY RF.FIELDNUM
+"""
+
+
+async def _has_recfield_rows(recname: str) -> bool:
+    r = await execute_query(
+        "SELECT 1 FROM PSRECFIELD WHERE RECNAME = :1 FETCH FIRST 1 ROWS ONLY",
+        [recname.upper()],
+    )
+    return "error" not in r and bool(r.get("results"))
+
+
+async def _resolve_voucher_header_record(requested: str) -> str | None:
+    """
+    Map common Payables voucher header aliases to a record in this database.
+    Many installs use record VOUCHER (PS_VOUCHER); older/docs often say VCHR_HDR.
+    """
+    u = requested.upper().replace("PS_", "")
+    chain: list[str] = []
+    if u == "VCHR_HDR":
+        chain = ["VOUCHER", "VCHR_HDR", "VOUCHER_HDR"]
+    elif "VCHR" in u and "HDR" in u:
+        chain = ["VOUCHER", u, "VCHR_HDR", "VOUCHER_HDR"]
+    elif u.startswith("VCHR"):
+        chain = ["VOUCHER", u, "VCHR_HDR", "VOUCHER_HDR"]
+    else:
+        return None
+    seen: set[str] = set()
+    for rec in chain:
+        if rec in seen:
+            continue
+        seen.add(rec)
+        if await _has_recfield_rows(rec):
+            return rec
+    r = await execute_query(
+        """
+        SELECT RECNAME FROM PSRECDEFN R
+        WHERE R.RECTYPE = 0
+          AND (
+            R.RECNAME = 'VOUCHER'
+            OR (R.RECNAME LIKE '%VCHR%' AND R.RECNAME LIKE '%HDR%')
+          )
+        ORDER BY CASE R.RECNAME
+                   WHEN 'VOUCHER' THEN 0
+                   WHEN 'VCHR_HDR' THEN 1
+                   WHEN 'VOUCHER_HDR' THEN 2
+                   ELSE 3
+                 END,
+                 LENGTH(R.RECNAME),
+                 R.RECNAME
+        FETCH FIRST 20 ROWS ONLY
+        """,
+        [],
+    )
+    if "error" not in r and r.get("results"):
+        for row in r["results"]:
+            rec = row["RECNAME"]
+            if rec not in seen and await _has_recfield_rows(rec):
+                return rec
+    return None
+
+
+async def _resolve_voucher_line_record(requested: str) -> str | None:
+    """Map VCHR_LINE and similar aliases to VOUCHER_LINE when metadata uses the modern name."""
+    u = requested.upper().replace("PS_", "")
+    chains: dict[str, list[str]] = {
+        "VCHR_LINE": ["VOUCHER_LINE", "VCHR_LINE"],
+        "VCHR_ACCTG_LINE": ["VOUCHER_LINE", "VCHR_LINE", "VCHR_ACCTG_LINE"],
+    }
+    chain = chains.get(u)
+    if chain is None and u == "VOUCHER_LINE":
+        chain = ["VCHR_LINE", "VOUCHER_LINE"]
+    if not chain:
+        return None
+    seen: set[str] = set()
+    for rec in chain:
+        if rec in seen:
+            continue
+        seen.add(rec)
+        if await _has_recfield_rows(rec):
+            return rec
+    return None
+
+
+async def _resolve_voucher_distrib_record(requested: str) -> str | None:
+    """Map VCHR_DIST_LN and similar aliases to DISTRIB_LINE."""
+    u = requested.upper().replace("PS_", "")
+    default = [
+        "DISTRIB_LINE",
+        "VCHR_DIST_LN",
+        "VOUCHER_DIST_LN",
+        "VOUCHER_DIST",
+    ]
+    chains: dict[str, list[str]] = {
+        "VCHR_DIST_LN": list(default),
+        "VOUCHER_DIST_LN": list(default),
+        "VOUCHER_DIST": list(default),
+        "DISTRIB": list(default),
+    }
+    chain = chains.get(u)
+    if chain is None and ("DISTRIB" in u or "DIST_LN" in u or "VCHR_DIST" in u):
+        chain = list(default)
+    if not chain:
+        return None
+    seen: set[str] = set()
+    for rec in chain:
+        if rec in seen:
+            continue
+        seen.add(rec)
+        if await _has_recfield_rows(rec):
+            return rec
+    return None
+
+
+async def _similar_record_names(recname: str, limit: int = 15) -> list[str]:
+    frag = recname.upper().replace("PS_", "").replace("_", "%")
+    r = await execute_query(
+        """
+        SELECT RECNAME, RECDESCR FROM PSRECDEFN
+        WHERE RECTYPE = 0 AND RECNAME LIKE :1
+        ORDER BY RECNAME
+        FETCH FIRST :2 ROWS ONLY
+        """,
+        [f"%{frag}%", limit],
+    )
+    if "error" in r or not r.get("results"):
+        return []
+    return [f"{row['RECNAME']} — {row['RECDESCR']}" for row in r["results"]]
+
 
 def register_tools(mcp):
     """Register all introspection tools with the MCP server."""
@@ -13,37 +163,62 @@ def register_tools(mcp):
         Get the structure of a PeopleSoft table/record including all fields,
         types, lengths, and descriptions. Use FIRST before writing finance SQL.
 
-        :param table_name: Record name (e.g., 'LEDGER', 'VENDOR', 'VCHR_HDR', 'JRNL_HDR').
+        Payables vouchers: ``VOUCHER`` / ``PS_VOUCHER`` (header), ``VOUCHER_LINE`` /
+        ``PS_VOUCHER_LINE`` (lines), ``DISTRIB_LINE`` / ``PS_DISTRIB_LINE`` (distributions).
+        Legacy names (``VCHR_HDR``, ``VCHR_LINE``, ``VCHR_DIST_LN``) resolve when needed.
+        The response includes ``resolved_from`` when an alias was mapped.
+
+        :param table_name: Record name (e.g. 'VOUCHER', 'VOUCHER_LINE', 'DISTRIB_LINE', 'VENDOR', 'LEDGER').
         :return: List of fields with properties
         """
         clean_name = table_name.upper().replace("PS_", "")
+        resolved = clean_name
 
-        sql = """
-            SELECT
-                RF.FIELDNAME,
-                RF.FIELDNUM,
-                DF.FIELDTYPE,
-                DF.LENGTH,
-                DF.DECIMALPOS,
-                DBMS_LOB.SUBSTR(DF.DESCRLONG, 4000, 1) AS DESCRIPTION,
-                CASE WHEN RF.USEEDIT LIKE '%K%' THEN 'Y' ELSE 'N' END AS IS_KEY,
-                CASE WHEN RF.USEEDIT LIKE '%R%' THEN 'Y' ELSE 'N' END AS IS_REQUIRED,
-                CASE WHEN DF.FIELDTYPE = 1 THEN 'XLAT' ELSE NULL END AS HAS_TRANSLATE
-            FROM PSRECFIELD RF
-            JOIN PSDBFIELD DF ON RF.FIELDNAME = DF.FIELDNAME
-            WHERE RF.RECNAME = :1
-            ORDER BY RF.FIELDNUM
-        """
+        # Build candidate list: known alias names (physical table suffix → RECNAME),
+        # then voucher-specific aliases, then the name as-given.
+        candidates: list[str] = [clean_name]
+        if clean_name in _TABLE_ALIAS:
+            candidates = _TABLE_ALIAS[clean_name] + [clean_name]
+        elif clean_name in ("VCHR_HDR", "VOUCHER_HDR"):
+            candidates = ["VOUCHER", "VCHR_HDR", "VOUCHER_HDR"]
 
-        result = await execute_query(sql, [clean_name])
+        result: dict = {"results": []}
+        for nm in dict.fromkeys(candidates):
+            result = await execute_query(_RECFIELD_SQL, [nm])
+            if "error" in result:
+                return result
+            if result.get("results"):
+                resolved = nm
+                break
+
+        # Voucher-specific resolvers as further fallbacks
+        resolvers = [
+            _resolve_voucher_header_record,
+            _resolve_voucher_line_record,
+            _resolve_voucher_distrib_record,
+        ]
+        for resolver in resolvers:
+            if result.get("results"):
+                break
+            if "error" in result:
+                return result
+            alt = await resolver(clean_name)
+            if alt:
+                resolved = alt
+                result = await execute_query(_RECFIELD_SQL, [resolved])
 
         if "error" in result:
             return result
 
         if not result.get("results"):
-            return {
-                "error": f"Table '{table_name}' not found. Try list_tables() to search for tables."
-            }
+            similar = await _similar_record_names(clean_name)
+            msg = (
+                f"Table '{table_name}' not found in PSRECFIELD / PSRECDEFN metadata. "
+                "Try list_tables(pattern='...') to search."
+            )
+            if similar:
+                msg += "\n\nSimilar record names in this database:\n  " + "\n  ".join(similar)
+            return {"error": msg}
 
         field_type_map = {
             0: "CHARACTER",
@@ -74,12 +249,19 @@ def register_tools(mcp):
                 }
             )
 
-        return {
-            "table_name": f"PS_{clean_name}",
-            "record_name": clean_name,
+        out: dict = {
+            "table_name": f"PS_{resolved}",
+            "record_name": resolved,
             "field_count": len(fields),
             "fields": fields,
         }
+        if resolved != clean_name:
+            out["requested_name"] = clean_name
+            out["resolved_from"] = (
+                f"'{clean_name}' is not a record in this installation; "
+                f"fields are for '{resolved}' (voucher / AP header naming varies)."
+            )
+        return out
 
     @mcp.tool()
     async def list_tables(
@@ -126,7 +308,9 @@ def register_tools(mcp):
             elif mu in ("AP", "PAYABLES"):
                 conditions.append(
                     """
-                    (R.RECNAME LIKE 'VCHR%' OR R.RECNAME LIKE 'VENDOR%'
+                    (R.RECNAME LIKE 'VCHR%' OR R.RECNAME LIKE 'VOUCHER%'
+                     OR R.RECNAME LIKE 'DISTRIB%'
+                     OR R.RECNAME LIKE 'VENDOR%'
                      OR R.RECNAME LIKE 'PYMNT%' OR R.RECNAME LIKE 'PAYMENT%'
                      OR R.RECNAME LIKE 'AP\\_%' ESCAPE '\\')
                     """
@@ -161,6 +345,7 @@ def register_tools(mcp):
 
         where_clause = " AND ".join(conditions)
 
+        limit_ph = len(params) + 1
         sql = f"""
             SELECT
                 R.RECNAME,
@@ -170,7 +355,7 @@ def register_tools(mcp):
             FROM PSRECDEFN R
             WHERE {where_clause}
             ORDER BY R.RECNAME
-            FETCH FIRST :limit ROWS ONLY
+            FETCH FIRST :{limit_ph} ROWS ONLY
         """
         params.append(limit)
 

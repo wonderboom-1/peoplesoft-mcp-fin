@@ -900,14 +900,25 @@ async def get_sql_definition(sql_id: str, max_length: int = 64000) -> dict:
     """
     sql_id = sql_id.upper()
     
-    # Fetch all segments ordered by SEQNUM; use DBMS_LOB.SUBSTR for CLOB
+    # DBMS_LOB.SUBSTR returns VARCHAR2 capped at 4000 bytes. Read in 4000-char
+    # chunks (positions 1, 4001, 8001, …) and concatenate to handle large CLOBs.
     sql = """
         SELECT 
             SQLID,
             SQLTYPE,
             MARKET,
             SEQNUM,
-            DBMS_LOB.SUBSTR(SQLTEXT, 14000, 1) AS SQLTEXT
+            DBMS_LOB.SUBSTR(SQLTEXT, 4000, 1) AS SQLTEXT1,
+            CASE WHEN DBMS_LOB.GETLENGTH(SQLTEXT) > 4000
+                 THEN DBMS_LOB.SUBSTR(SQLTEXT, 4000, 4001)
+                 ELSE NULL END AS SQLTEXT2,
+            CASE WHEN DBMS_LOB.GETLENGTH(SQLTEXT) > 8000
+                 THEN DBMS_LOB.SUBSTR(SQLTEXT, 4000, 8001)
+                 ELSE NULL END AS SQLTEXT3,
+            CASE WHEN DBMS_LOB.GETLENGTH(SQLTEXT) > 12000
+                 THEN DBMS_LOB.SUBSTR(SQLTEXT, 4000, 12001)
+                 ELSE NULL END AS SQLTEXT4,
+            DBMS_LOB.GETLENGTH(SQLTEXT) AS TEXT_LENGTH
         FROM PSSQLTEXTDEFN
         WHERE SQLID = :1
         ORDER BY SEQNUM
@@ -921,21 +932,23 @@ async def get_sql_definition(sql_id: str, max_length: int = 64000) -> dict:
     if not rows:
         return {"error": f"SQL object '{sql_id}' not found"}
     
-    # Concatenate SQL text from all segments
-    segments = []
+    # Concatenate SQL text from all segments (each row may have up to 4 chunks)
+    segments: list[str] = []
     total_len = 0
     for row in rows:
-        txt = row.get("SQLTEXT") or ""
-        if isinstance(txt, str) and total_len < max_length:
+        for col in ("SQLTEXT1", "SQLTEXT2", "SQLTEXT3", "SQLTEXT4"):
+            txt = row.get(col)
+            if not txt:
+                continue
+            if hasattr(txt, "read"):
+                txt = txt.read() if callable(getattr(txt, "read", None)) else str(txt)
+            if not isinstance(txt, str) or not txt:
+                continue
+            if total_len >= max_length:
+                break
             remainder = max_length - total_len
             segments.append(txt[:remainder] if len(txt) > remainder else txt)
             total_len += len(txt)
-        elif hasattr(txt, "read"):  # LOB object
-            content = txt.read() if callable(getattr(txt, "read", None)) else str(txt)
-            if total_len < max_length:
-                remainder = max_length - total_len
-                segments.append(content[:remainder] if len(content) > remainder else content)
-                total_len += len(content)
     
     sql_text = "".join(segments)
     truncated = total_len >= max_length
@@ -976,9 +989,9 @@ async def search_sql_definitions(search_term: str, limit: int = 50) -> dict:
     Example:
         search_sql_definitions("PS_ABSV_REQUEST")
     """
-    search_pattern = f"%{search_term.upper()}%"
+    search_pattern = search_term.upper()
     
-    # Use DBMS_LOB.INSTR for CLOB search; ROWNUM for limit (bind var compatibility)
+    # DBMS_LOB.INSTR does substring search (no LIKE wildcards)
     sql = """
         SELECT * FROM (
             SELECT DISTINCT S.SQLID, S.SQLTYPE, S.MARKET

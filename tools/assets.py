@@ -73,7 +73,7 @@ def register_tools(mcp):
             SELECT A.BUSINESS_UNIT_AM AS BUSINESS_UNIT, A.ASSET_ID, A.DESCR, A.ASSET_STATUS, A.TAG_NBR
             FROM PS_ASSET A
             WHERE {where_sql}
-            FETCH FIRST :lim ROWS ONLY
+            FETCH FIRST :{n} ROWS ONLY
         """
         params.append(limit)
         r = await execute_query(sql, params)
@@ -93,7 +93,7 @@ def register_tools(mcp):
                 SELECT A.BUSINESS_UNIT, A.ASSET_ID, A.DESCR, A.ASSET_STATUS, A.TAG_NBR
                 FROM PS_ASSET A
                 WHERE {" AND ".join(cond2)}
-                FETCH FIRST :lim ROWS ONLY
+                FETCH FIRST :{nn} ROWS ONLY
             """
             params2.append(limit)
             return await execute_query(sql2, params2)
