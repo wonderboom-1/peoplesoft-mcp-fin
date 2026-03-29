@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "peoplesoft-fin": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/home/peoplesoft-mcp-fin",
+        "run",
+        "--no-python-downloads",
+        "--python",
+        "/usr/bin/python3.12",
+        "peoplesoft_fin_server.py"
+      ],
+      "env": {
+        "UV_PYTHON": "/usr/bin/python3.12",
+        "UV_PYTHON_DOWNLOADS": "never",
+        "UV_NATIVE_TLS": "1"
+      }
+    }
+  }
+}
