@@ -29,6 +29,8 @@ This server provides semantic tools for Finance, Supply Chain and PeopleTools me
 ## Installation
 
 ```bash
+# Clone the repository
+git clone https://github.com/wonderboom-1/peoplesoft-mcp-fin.git
 cd peoplesoft-mcp-fin
 uv sync
 ```
@@ -120,77 +122,110 @@ The MCP enables natural language questions like:
 
 ## Tool overview
 
-### Introspection
+### Schema Introspection (`tools/introspection.py`) — 5 tools
 
-| Tool | Description |
-|------|-------------|
-| `describe_table` | Record fields via PSRECFIELD |
-| `list_tables` | Search records; modules: GL, AP, AR, PO, AM, KK, SYSTEM |
-| `get_translate_values` | XLAT decode |
-| `get_table_indexes` | PSKEYDEFN |
-| `get_table_relationships` | Related records by shared keys |
+| Tool | Parameters | Description |
+|------|-----------|-------------|
+| `describe_table` | **table_name** | Get table structure (fields, types, lengths, keys); falls back to ALL_TAB_COLUMNS for PeopleTools system tables |
+| `list_tables` | pattern?, module?, limit? | Search records by name pattern or finance module (GL, AP, AR, PO, AM, KK, SYSTEM) |
+| `get_translate_values` | **field_name** | Decode XLAT translate values for a field (e.g. VENDOR_STATUS) |
+| `get_table_indexes` | **table_name** | Get index/key definitions from PSKEYDEFN |
+| `get_table_relationships` | **table_name** | Find related tables sharing key fields (join discovery) |
 
-### General Ledger (`tools/gl.py`)
+### General Ledger (`tools/gl.py`) — 6 tools
 
-| Tool | Description |
-|------|-------------|
-| `get_gl_account` | Chart row (PS_GL_ACCOUNT_TBL) |
-| `search_gl_accounts` | Search accounts by pattern |
-| `get_ledger_account_summary` | Sum by account for BU/ledger/year/period |
-| `get_journal_header` / `get_journal_lines` | PS_JRNL_HDR / PS_JRNL_LN |
-| `list_open_periods` | PS_OPEN_PERIOD (if present) |
+| Tool | Parameters | Description |
+|------|-----------|-------------|
+| `get_gl_account` | **setid**, **account** | Get chart-of-accounts row, effective-dated (PS_GL_ACCOUNT_TBL) |
+| `search_gl_accounts` | **setid**, pattern?, account_type?, limit? | Search GL accounts by description or account number |
+| `get_ledger_account_summary` | **business_unit**, **ledger**, **fiscal_year**, **accounting_period**, account_pattern?, limit? | Summarize posted ledger balances by account (PS_LEDGER) |
+| `get_journal_header` | **business_unit**, **journal_id** | Get journal header (PS_JRNL_HEADER) |
+| `get_journal_lines` | **business_unit**, **journal_id**, limit? | Get journal lines (PS_JRNL_LN) |
+| `list_open_periods` | **business_unit**, ledger_group? | List open GL periods (PS_FIN_OPEN_PERIOD with PS_CAL_DETP_TBL fallback) |
 
-### Accounts Payable (`tools/ap.py`)
+### Accounts Payable (`tools/ap.py`) — 6 tools
 
-| Tool | Description |
-|------|-------------|
-| `get_vendor` / `search_vendors` | PS_VENDOR |
-| `get_voucher_header` / `get_voucher_lines` / `get_voucher_distribution_lines` | PS_VOUCHER, PS_VOUCHER_LINE, PS_DISTRIB_LINE (legacy VCHR_* fallbacks) |
-| `list_recent_vouchers` | Recent invoices by BU |
+| Tool | Parameters | Description |
+|------|-----------|-------------|
+| `get_vendor` | **setid**, **vendor_id** | Get vendor master row (PS_VENDOR) |
+| `search_vendors` | **setid**, name_pattern?, vendor_id?, limit? | Search vendors by name or ID |
+| `get_voucher_header` | **business_unit**, **voucher_id** | Get voucher header (PS_VOUCHER; legacy VCHR_HDR fallback) |
+| `get_voucher_lines` | **business_unit**, **voucher_id**, limit? | Get voucher lines (PS_VOUCHER_LINE) |
+| `get_voucher_distribution_lines` | **business_unit**, **voucher_id**, limit? | Get distribution/accounting lines (PS_DISTRIB_LINE) |
+| `list_recent_vouchers` | **business_unit**, vendor_id?, days?, limit? | List recent vouchers by invoice date |
 
-### AR / Billing (`tools/ar.py`)
+### Accounts Receivable (`tools/ar.py`) — 4 tools
 
-| Tool | Description |
-|------|-------------|
-| `get_customer` / `search_customers` | PS_CUSTOMER |
-| `get_billing_invoice_header` | PS_BI_HDR |
-| `list_customer_items` | PS_ITEM |
+| Tool | Parameters | Description |
+|------|-----------|-------------|
+| `get_customer` | **setid**, **cust_id** | Get customer master row (PS_CUSTOMER) |
+| `search_customers` | **setid**, name_pattern?, cust_id?, limit? | Search customers by name or ID |
+| `get_billing_invoice_header` | **business_unit**, **invoice** | Get billing invoice header (PS_BI_HDR) |
+| `list_customer_items` | **business_unit**, **cust_id**, limit? | List open customer items (PS_ITEM) |
 
-### Purchasing (`tools/purchasing.py`)
+### Purchasing (`tools/purchasing.py`) — 3 tools
 
-| Tool | Description |
-|------|-------------|
-| `get_purchase_order` / `get_po_lines` | PS_PO_HDR / PS_PO_LINE |
-| `search_purchase_orders` | PO search by vendor/status |
+| Tool | Parameters | Description |
+|------|-----------|-------------|
+| `get_purchase_order` | **business_unit**, **po_id** | Get PO header (PS_PO_HDR) |
+| `get_po_lines` | **business_unit**, **po_id**, limit? | Get PO line details (PS_PO_LINE) |
+| `search_purchase_orders` | **business_unit**, vendor_id?, status?, limit? | Search recent POs by vendor or status |
 
-### Asset Management (`tools/assets.py`)
+### Asset Management (`tools/assets.py`) — 2 tools
 
-| Tool | Description |
-|------|-------------|
-| `get_asset` / `search_assets` | PS_ASSET (BUSINESS_UNIT_AM vs BUSINESS_UNIT fallback) |
+| Tool | Parameters | Description |
+|------|-----------|-------------|
+| `get_asset` | **business_unit**, **asset_id** | Get asset info (PS_ASSET; BUSINESS_UNIT_AM fallback) |
+| `search_assets` | **business_unit**, descr_pattern?, tag_nbr?, limit? | Search assets by description or tag number |
 
-### PeopleTools  (`tools/peopletools.py`)
+### Financial Performance (`tools/performance.py`) — 6 tools
 
-| Tool | Description |
-|------|-------------|
-| `get_record_definition` | Full record structure with fields and keys |
-| `search_records` | Find records by name or description |
-| `get_component_structure` | Component pages and navigation |
-| `get_page_fields` | Fields on a page with record bindings |
-| `get_peoplecode` | Find PeopleCode on records/fields |
-| `get_permission_list_details` | Security access for permission lists |
-| `get_roles_for_permission_list` | Roles containing a permission list |
-| `get_process_definition` | Process Scheduler job definitions |
-| `get_application_engine_steps` | AE program structure |
-| `get_integration_broker_services` | IB service operations |
-| `get_message_definition` | IB message structure |
-| `get_query_definition` | PS Query records and fields |
-| `get_sql_definition` | Get SQL text by SQLID (views, App Engine, PeopleCode) |
-| `search_sql_definitions` | Search SQL objects by text |
-| `search_peoplecode` | Search text within PeopleCode |
-| `get_field_usage` | Impact analysis - where a field is used |
-| `get_translate_field_values` | All XLAT values for a field |
-| `explain_peoplesoft_concept` | Explains effective dating, SetID, etc. |
+| Tool | Parameters | Description |
+|------|-----------|-------------|
+| `get_budget_vs_actual` | **business_unit**, **fiscal_year**, ledger_actuals?, ledger_budget?, account?, accounting_period?, limit? | Compare budget vs actuals ledger by account (PS_LEDGER) |
+| `search_budget_exceptions` | **business_unit**, **fiscal_year**, threshold_pct?, ledger_actuals?, ledger_budget?, limit? | Find accounts exceeding a budget % threshold |
+| `get_commitment_control_budget` | **business_unit**, **ledger_group**, **fiscal_year**, account?, limit? | Query KK budget balances (PS_LEDGER_KK) |
+| `check_budget_status` | **business_unit**, **ledger_group**, **fiscal_year**, account?, limit? | Summarize KK available balance and consumed % |
+| `get_period_close_status` | **business_unit**, **fiscal_year**, accounting_period? | Period open/close status across ledger groups (PS_FIN_OPEN_PERIOD) |
+| `get_journal_posting_summary` | **business_unit**, **fiscal_year**, accounting_period? | Count posted vs unposted journals for period-end monitoring |
+
+### Currency (`tools/currency.py`) — 2 tools
+
+| Tool | Parameters | Description |
+|------|-----------|-------------|
+| `get_exchange_rate` | **from_currency**, **to_currency**, effective_date?, rt_type?, rt_rate_index? | Look up effective-dated exchange rate from PS_RT_RATE_TBL |
+| `convert_amount` | **amount**, **from_currency**, **to_currency**, effective_date?, rt_type?, rt_rate_index? | Convert monetary amount between currencies using PS_RT_RATE_TBL rates |
+
+### PeopleTools Metadata (`tools/peopletools.py`) — 18 tools
+
+| Tool | Parameters | Description |
+|------|-----------|-------------|
+| `get_record_definition` | **record_name** | Get record definition from PSRECDEFN |
+| `search_records` | **search_term**, record_type?, limit? | Search record definitions by name or description |
+| `get_component_structure` | **component_name**, market? | Get component structure from PSPNLGRPDEFN |
+| `get_component_pages` | **component_name**, market? | Get pages within a component (PSPNLGROUP) |
+| `get_page_fields` | **page_name** | Get fields on a page (PSPNLFIELD) |
+| `get_page_field_bindings` | **page_name** | Get field-to-record bindings on a page |
+| `get_peoplecode` | **record_name**, **field_name**, **event** | Get PeopleCode source from PSPCMTXT (chunked CLOB read) |
+| `get_permission_list_details` | **permission_list** | Get permission list details (PSCLASSDEFN + PSAUTHITEM) |
+| `get_roles_for_permission_list` | **permission_list** | Find all roles containing a permission list (PSROLECLASS) |
+| `get_process_definition` | process_name?, process_type? | Get process scheduler definitions (PS_PRCSDEFN) |
+| `get_application_engine_steps` | **ae_program** | Get AE program sections and steps (PSAESTEPDEFN) |
+| `get_integration_broker_services` | service_name? | Get IB service operations (PSOPERATION) |
+| `get_message_definition` | **message_name** | Get message definition (PSMSGDEFN) |
+| `get_query_definition` | **query_name** | Get PS Query definition (PSQRYDEFN) |
+| `get_sql_definition` | **sql_id** | Get SQL object text from PSSQLTEXTDEFN (chunked CLOB read) |
+| `search_sql_definitions` | **search_pattern**, limit? | Search SQL definitions by text pattern |
+| `search_peoplecode` | **search_text**, limit? | Search PeopleCode source text across all programs |
+| `get_field_usage` | **field_name**, limit? | Find all records that use a specific field |
+| `get_translate_field_values` | **field_name** | Get translate values for a field (PSXLATITEM) |
+| `explain_peoplesoft_concept` | **concept** | Explain a PeopleTools concept (static knowledge, no DB query) |
+
+### Raw SQL (`peoplesoft_fin_server.py`) — 1 tool
+
+| Tool | Parameters | Description |
+|------|-----------|-------------|
+| `query_peoplesoft_fin_db` | **sql_query**, parameters? | Execute arbitrary read-only SQL with pre/post-validation and auto-recovery |
 
 ## Available Resources
 
