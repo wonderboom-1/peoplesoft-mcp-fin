@@ -1,4 +1,0 @@
-# Local Python only (no GitHub CPython download); use OS trust store for PyPI/TLS.
-python-preference = "only-system"
-python-downloads = "never"
-native-tls = true
